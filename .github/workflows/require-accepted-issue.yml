@@ -1,29 +1,35 @@
 name: Require accepted issue
 on:
-  # pull_request_target runs with write permissions for fork PRs.
-  # Never check out or execute PR code in this workflow.
+  # https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target
   pull_request_target:
-    types: [opened, reopened, edited, synchronize]
-
-permissions:
-  pull-requests: write
-  issues: write
+    types: [opened, reopened, edited]
 
 jobs:
   check:
-    # maintainers and collaborators are exempt
     #if: >-
-      #!contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'),
-      #github.event.pull_request.author_association)
+    #  !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'),
+    #  github.event.pull_request.author_association)
+    #  && github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: read
     steps:
-      - name: Require a linked issue labeled 'accepted'
+      - name: Check linked issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           OWNER: ${{ github.repository_owner }}
           NAME: ${{ github.event.repository.name }}
           PR: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          BODY: >-
+            Thanks for your interest in contributing! This project only accepts
+            pull requests from external contributors that are linked to an 
+            issue that a maintainer has triaged, labeled `accepted` and 
+            assigned to you. Please open an issue (or find an existing one) 
+            and wait for it to be accepted and assigned to you, then link it 
+            in the PR description (e.g. `Fixes #123`).
         run: |
           accepted=$(gh api graphql \
             -F owner="$OWNER" -F name="$NAME" -F pr="$PR" \
@@ -31,11 +37,12 @@ jobs:
               query($owner: String!, $name: String!, $pr: Int!) {
                 repository(owner: $owner, name: $name) {
                   pullRequest(number: $pr) {
-                    closingIssuesReferences(first: 50) {
+                    closingIssuesReferences(first: 10) {
                       nodes {
                         state
                         repository { nameWithOwner }
-                        labels(first: 100) { nodes { name } }
+                        labels(first: 10) { nodes { name } }
+                        assignees(first: 10) { nodes { login } }
                       }
                     }
                   }
@@ -44,7 +51,8 @@ jobs:
             --jq '[.data.repository.pullRequest.closingIssuesReferences.nodes[]
                    | select(.state == "OPEN"
                             and .repository.nameWithOwner == env.GH_REPO
-                            and any(.labels.nodes[]; .name == "accepted"))]
+                            and any(.labels.nodes[]; .name == "accepted")
+                            and any(.assignees.nodes[]; .login == env.AUTHOR))]
                   | length')
 
           if [ "$accepted" -gt 0 ]; then
@@ -52,6 +60,5 @@ jobs:
             exit 0
           fi
 
-          gh pr comment "$PR" --body \
-            "Thanks for your interest in contributing! This project only accepts pull requests that are linked to an issue that a maintainer has triaged and labeled \`accepted\`. Please open an issue (or find an existing one) and wait for it to be accepted, then link it in the PR description (e.g. \`Fixes #123\`)."
+          gh pr comment "$PR" --body "$BODY"
           #gh pr close "$PR"
