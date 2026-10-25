@@ -1,0 +1,57 @@
+name: Require accepted issue
+on:
+  # pull_request_target runs with write permissions for fork PRs.
+  # Never check out or execute PR code in this workflow.
+  pull_request_target:
+    types: [opened, reopened, edited, synchronize]
+
+permissions:
+  pull-requests: write
+  issues: write
+
+jobs:
+  check:
+    # maintainers and collaborators are exempt
+    #if: >-
+      #!contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'),
+      #github.event.pull_request.author_association)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a linked issue labeled 'accepted'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          NAME: ${{ github.event.repository.name }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          accepted=$(gh api graphql \
+            -F owner="$OWNER" -F name="$NAME" -F pr="$PR" \
+            -f query='
+              query($owner: String!, $name: String!, $pr: Int!) {
+                repository(owner: $owner, name: $name) {
+                  pullRequest(number: $pr) {
+                    closingIssuesReferences(first: 50) {
+                      nodes {
+                        state
+                        repository { nameWithOwner }
+                        labels(first: 100) { nodes { name } }
+                      }
+                    }
+                  }
+                }
+              }' \
+            --jq '[.data.repository.pullRequest.closingIssuesReferences.nodes[]
+                   | select(.state == "OPEN"
+                            and .repository.nameWithOwner == env.GH_REPO
+                            and any(.labels.nodes[]; .name == "accepted"))]
+                  | length')
+
+          if [ "$accepted" -gt 0 ]; then
+            echo "Found $accepted linked accepted issue(s)."
+            exit 0
+          fi
+
+          gh pr comment "$PR" --body \
+            "Thanks for your interest in contributing! This project only accepts pull requests that are linked to an issue that a maintainer has triaged and labeled \`accepted\`. Please open an issue (or find an existing one) and wait for it to be accepted, then link it in the PR description (e.g. \`Fixes #123\`)."
+          #gh pr close "$PR"
